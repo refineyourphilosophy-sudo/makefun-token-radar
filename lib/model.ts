@@ -31,9 +31,10 @@ import { valueAblation } from './evidence.ts';
 // 5. TOKEN ODDS. A logistic model (lib/odds.ts) for P(token), fitted on
 //    the snapshot's peer record: every protocol except the 25 hold-out
 //    test slugs. Features, kept only if they lower the Brier score in
-//    BOTH the leave-one-out and the walk-forward test: log TVL, age,
-//    listing-date-unknown, 7-day change, category dummies. Chain count
-//    was tested and not kept; a shuffled control confirmed must-not-help.
+//    BOTH the leave-one-out and the walk-forward test: log TVL, age
+//    (unknown listing dates imputed at 4.0 years — see lib/odds.ts),
+//    7-day change, category dummies. Chain count was tested and not
+//    kept; a shuffled control confirmed must-not-help.
 // 6. EXPECTED VALUE. Conditional value x P(token). The board ranks on
 //    this, and implied_value_usd in board.json IS the expected value.
 //    The conditional value and P(token) are kept as separate columns.
@@ -269,8 +270,10 @@ export interface OddsSummary {
   calibration: { bin: number; n: number; meanPred: number; observed: number }[];
   ageBuckets: { bucket: string; n: number; withToken: number; rate: number }[];
   spec: string[];
-  /** Median age in years over the odds training rows with a known listing date (the age imputed when it is unknown). */
+  /** Median age in years over the odds training rows with a known listing date. */
   median_age_years: number;
+  /** Age in years imputed for protocols with no listing date (4.0 in v3 — see lib/odds.ts). */
+  unknown_age_years: number;
 }
 
 /** Everything the dashboard needs: the board, the live set, the fitted model and its hold-out check. */
@@ -303,7 +306,7 @@ export class SnapshotError extends Error {
   }
 }
 
-export const MODEL_VERSION = 'radar-3-odds';
+export const MODEL_VERSION = 'radar-4-odds';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -895,6 +898,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
       ageBuckets: oddsEval.ageBuckets,
       spec: oddsModel.spec,
       median_age_years: Math.round(oddsModel.ctx.medianAgeYears * 100) / 100,
+      unknown_age_years: Math.round(oddsModel.ctx.unknownAgeYears * 100) / 100,
     },
     ablation,
     ledger,
