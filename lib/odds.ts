@@ -332,3 +332,114 @@ export function shuffled(values: number[], seed = 20261114): number[] {
   }
   return out;
 }
+
+/** One row of the odds term-selection table. */
+export interface OddsTermRow {
+  label: string;
+  looBrier: number;
+  wfBrier: number;
+  kept: boolean;
+}
+
+/** One age bucket of the peers' record. */
+export interface OddsAgeBucket {
+  bucket: string;
+  n: number;
+  withToken: number;
+  rate: number;
+}
+
+/** The full odds evaluation: term selection, control, calibration, peers' record. */
+export interface OddsEvaluation {
+  n: number;
+  positives: number;
+  baseRate: number;
+  baseBrier: number;
+  terms: OddsTermRow[];
+  controlLoo: number;
+  controlWf: number;
+  selectedLoo: number;
+  selectedWf: number;
+  wfTrain: number;
+  wfTest: number;
+  wfCutoff: string;
+  calibration: { bin: number; n: number; meanPred: number; observed: number }[];
+  ageBuckets: OddsAgeBucket[];
+  /** The spec the selection keeps (base + every term that helps in both tests). */
+  selectedSpec: OddsFeature[];
+}
+
+/**
+ * Run the odds term selection: base + one candidate at a time, KEPT only
+ * if the Brier score improves in BOTH the leave-one-out and the
+ * walk-forward test. The shuffled control must not help in either.
+ * Also returns the selected model's LOO calibration and the peers'
+ * token rate by age bucket. Deterministic; re-run scripts/eval-odds.mjs
+ * to reproduce this table from the snapshot.
+ */
+export function evaluateOdds(snapshot: Snapshot): OddsEvaluation {
+  const rows = oddsRows(snapshot);
+  const ctx = oddsContext(rows, snapshot.as_of);
+  const ys = rows.map((p) => (hasToken(p) ? 1 : 0));
+  const baseBrier = baseRateBrier(ctx.baseRate);
+  const base: OddsFeature[] = ['logtvl'];
+  const candidates: { label: string; add: OddsFeature[] }[] = [
+    { label: '+ age (years + listing-date-unknown)', add: ['age', 'age_missing'] },
+    { label: '+ 7d TVL change', add: ['change'] },
+    { label: '+ chain count', add: ['chains'] },
+    { label: '+ category dummies', add: ['cats'] },
+  ];
+  const baseEval = { loo: looBrier(rows, base, ctx, snapshot.as_of).brier, wf: walkForwardBrier(rows, base, ctx, snapshot.as_of) };
+  const terms: OddsTermRow[] = [{ label: 'base: log TVL', looBrier: baseEval.loo, wfBrier: baseEval.wf.brier, kept: true }];
+  const selectedSpec: OddsFeature[] = [...base];
+  for (const c of candidates) {
+    const spec = [...base, ...c.add];
+    const loo = looBrier(rows, spec, ctx, snapshot.as_of).brier;
+    const wf = walkForwardBrier(rows, spec, ctx, snapshot.as_of).brier;
+    const kept = loo < baseEval.loo && wf < baseEval.wf.brier;
+    if (kept) selectedSpec.push(...c.add);
+    terms.push({ label: c.label, looBrier: loo, wfBrier: wf, kept });
+  }
+  const shuffledCol = shuffled(rows.map((p) => Math.log10(p.tvl_usd) - 7.5));
+  const controlLoo = looBrier(rows, base, ctx, snapshot.as_of, shuffledCol).brier;
+  const controlWf = walkForwardBrier(rows, base, ctx, snapshot.as_of, shuffledCol).brier;
+  const selLoo = looBrier(rows, selectedSpec, ctx, snapshot.as_of);
+  const selWf = walkForwardBrier(rows, selectedSpec, ctx, snapshot.as_of);
+  const bucketOf = (p: SnapshotProtocol): string => {
+    if (p.listed_at === null) return 'listing date unknown';
+    const d = (Date.parse(snapshot.as_of) - Date.parse(p.listed_at)) / 86_400_000;
+    return d < 180 ? '< 6 months' : d < 365 ? '6-12 months' : d < 730 ? '1-2 years' : d < 1460 ? '2-4 years' : '4+ years';
+  };
+  const bucketOrder = ['< 6 months', '6-12 months', '1-2 years', '2-4 years', '4+ years', 'listing date unknown'];
+  const bucketMap = new Map<string, { n: number; y: number }>();
+  for (const p of rows) {
+    const k = bucketOf(p);
+    const b = bucketMap.get(k) ?? { n: 0, y: 0 };
+    b.n++;
+    if (hasToken(p)) b.y++;
+    bucketMap.set(k, b);
+  }
+  const ageBuckets: OddsAgeBucket[] = bucketOrder
+    .filter((k) => bucketMap.has(k))
+    .map((k) => {
+      const b = bucketMap.get(k)!;
+      return { bucket: k, n: b.n, withToken: b.y, rate: b.y / b.n };
+    });
+  return {
+    n: rows.length,
+    positives: ys.reduce((a, b) => a + b, 0),
+    baseRate: ctx.baseRate,
+    baseBrier,
+    terms,
+    controlLoo,
+    controlWf,
+    selectedLoo: selLoo.brier,
+    selectedWf: selWf.brier,
+    wfTrain: selWf.nTrain,
+    wfTest: selWf.nTest,
+    wfCutoff: selWf.cutoff,
+    calibration: calibrationDeciles(selLoo.preds, ys),
+    ageBuckets,
+    selectedSpec,
+  };
+}
