@@ -1,0 +1,45 @@
+*{box-sizing:border-box}
+body{font-family:Arial,Helvetica,sans-serif;margin:0;background:#0e1626;color:#e8eef7;font-size:15px;line-height:1.45}
+.wrap{max-width:1180px;margin:0 auto;padding:0 20px}
+header{background:#16233c;padding:22px 0 16px;border-bottom:1px solid #2a3a56}
+h1{margin:0;font-size:26px}
+.sub{margin:6px 0 0;color:#9db4d4}
+main{padding:18px 0 8px}
+footer{padding:14px 0 28px;color:#7d8ea8;font-size:12.5px}
+.stats{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 14px}
+.stat{background:#16233c;border:1px solid #2a3a56;border-radius:8px;padding:10px 14px;min-width:130px}
+.stat b{display:block;font-size:19px;color:#7ddba3}
+.stat span{font-size:12px;color:#9db4d4}
+.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px}
+.controls input,.controls select{background:#16233c;color:#e8eef7;border:1px solid #2a3a56;border-radius:6px;padding:8px 10px;font-size:14px}
+.controls input{flex:1;min-width:180px}
+.controls label{font-size:13px;color:#9db4d4}
+table{width:100%;border-collapse:collapse;background:#16233c;border-radius:8px;overflow:hidden}
+th,td{padding:9px 10px;text-align:left;border-bottom:1px solid #2a3a56;vertical-align:top}
+th{color:#9db4d4;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;cursor:pointer;white-space:nowrap}
+th:hover{color:#e8eef7}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr:hover td{background:#1a2a47}
+a{color:#8fc3ff;text-decoration:none}
+a:hover{text-decoration:underline}
+.val{color:#7ddba3;font-weight:bold}
+.badge{display:inline-block;background:#2a3a56;border-radius:10px;padding:1px 8px;font-size:11.5px;color:#c8d6ea}
+.badge.wl{background:#274a35;color:#7ddba3}
+.muted{color:#9db4d4}
+.small{font-size:13px}
+.card{background:#16233c;border:1px solid #2a3a56;border-radius:8px;padding:18px 20px;margin-bottom:14px}
+.card h2{margin:0 0 4px;font-size:22px}
+.kv{display:flex;justify-content:space-between;gap:16px;padding:7px 0;border-bottom:1px solid #2a3a56}
+.kv span{color:#9db4d4}
+.kv b{text-align:right;font-variant-numeric:tabular-nums}
+ol.farm{margin:10px 0 4px;padding-left:22px}
+ol.farm li{margin:9px 0}
+ol.farm .cost{color:#7ddba3}
+.method{background:#131f33;border:1px solid #2a3a56;border-radius:8px;padding:14px 18px;margin:16px 0;font-size:13.5px;color:#c8d6ea}
+.method h3{margin:0 0 6px;font-size:15px;color:#e8eef7}
+.method p{margin:6px 0}
+.method code{color:#7ddba3}
+.warn{color:#e8b26a}
+.back{display:inline-block;margin-bottom:10px}
+.note{color:#9db4d4;font-size:13px;margin:10px 0}
+h2.sec{font-size:18px;margin:22px 0 8px}
