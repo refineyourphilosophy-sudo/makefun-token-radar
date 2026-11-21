@@ -91,5 +91,6 @@ writeFileSync(
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
     `token radar: hold-out (train ${radar.holdout.trainCount}, test ${radar.holdout.testCount}): log R2 ${radar.holdout.logR2.toFixed(3)}, median error ${(radar.holdout.mdAPE * 100).toFixed(1)}%\n` +
+    `token radar: odds (LOO Brier ${radar.odds.selectedLoo.toFixed(4)} vs base rate ${radar.odds.baseBrier.toFixed(4)}); farm verdicts FARM ${radar.farm_counts.farm} / THIN ${radar.farm_counts.thin} / SKIP ${radar.farm_counts.skip}; ledger ${radar.ledger_total} of ${snapshot.protocols.length} protocols\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashboardFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );

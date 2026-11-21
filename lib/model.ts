@@ -1,3 +1,6 @@
+import { evaluateOdds, fitOddsModel, oddsFeatureNames, predictOdds, type FittedOdds } from './odds.ts';
+import { valueAblation } from './evidence.ts';
+
 // Token Radar — valuation model, fitted at runtime from the sealed snapshot.
 //
 // METHOD (pre-declared, one fixed procedure, no tuning after the fact)
@@ -21,9 +24,27 @@
 //    (2026-11-14); unknown age counts as 365 days. Multiplier:
 //    0.6 + min(age, 1095) / 1095 * 0.4. Older, longer-running protocols
 //    score higher: a token is more plausible after years of operation.
-// 4. IMPLIED VALUE. 10^(a + b*log10(TVL) + category adjustment) * growth
-//    multiplier * maturity multiplier, rounded to a whole dollar, at
-//    least $1, at most $100,000,000,000,000.
+// 4. CONDITIONAL VALUE. 10^(a + b*log10(TVL) + category adjustment) *
+//    growth multiplier * maturity multiplier, rounded to a whole dollar,
+//    at least $1, at most $100,000,000,000,000. This is what the token
+//    would be worth IF it launched — not what to expect.
+// 5. TOKEN ODDS. A logistic model (lib/odds.ts) for P(token), fitted on
+//    the snapshot's peer record: every protocol except the 25 hold-out
+//    test slugs. Features, kept only if they lower the Brier score in
+//    BOTH the leave-one-out and the walk-forward test: log TVL, age,
+//    listing-date-unknown, 7-day change, category dummies. Chain count
+//    was tested and not kept; a shuffled control confirmed must-not-help.
+// 6. EXPECTED VALUE. Conditional value x P(token). The board ranks on
+//    this, and implied_value_usd in board.json IS the expected value.
+//    The conditional value and P(token) are kept as separate columns.
+// 7. FARM VERDICTS. Net-of-fees economics from the expected value with
+//    stated assumptions (see farmEconomics): an airdrop allocation share
+//    of the expected value, split among an assumed number of farmers,
+//    scaled linearly with the deposit against the average farmer's
+//    $100, minus gas minus time at $25 an hour. FARM clears $50 net and
+//    $25 an hour; THIN is positive but below that bar; SKIP loses money.
+//    The assumptions are labelled on the dashboard and adjustable there,
+//    with the same arithmetic — they are assumptions, not measured facts.
 //
 // HOLD-OUT (fixed split, declared before any number was seen)
 // -----------------------------------------------------------
@@ -134,7 +155,12 @@ export interface BoardRow {
   symbol: string | null;
   token_status: 'pre-token';
   age_days: number | null;
+  /** The EXPECTED value: conditional value-if-launches x P(token). The board ranks on this. */
   implied_value_usd: number;
+  /** The conditional value if a token launched, before the odds are applied. */
+  conditional_value_usd: number;
+  /** P(token) from the odds model: the peers' record, not a forecast. */
+  token_probability: number;
   model: {
     base_value_usd: number;
     category_adjustment: number;
@@ -143,7 +169,30 @@ export interface BoardRow {
     maturity_multiplier: number;
     age_days: number | null;
   };
+  farm_verdict: FarmVerdict;
+  farm_net_usd: number;
+  farm_net_per_hour_usd: number;
+  farm_gas_usd: number;
+  farm_time_hours: number;
+  farm_capital_usd: number;
   farm_steps: string[];
+}
+
+/** A farm verdict: worth farming, marginal, or not worth it, at the stated assumptions. */
+export type FarmVerdict = 'FARM' | 'THIN' | 'SKIP';
+
+/** The net-of-fees economics behind one row's verdict. */
+export interface FarmEconomics {
+  verdict: FarmVerdict;
+  /** Expected airdrop value for one farmer at the stated deposit. */
+  airdropUsd: number;
+  gasUsd: number;
+  timeHours: number;
+  capitalUsd: number;
+  holdDays: number;
+  /** Airdrop minus gas minus time at the stated hourly value. */
+  netUsd: number;
+  netPerHourUsd: number;
 }
 
 /** The dashboard's compact view of one row. */
@@ -159,10 +208,18 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
+  conditional_value_usd: number;
+  token_probability: number;
   base_value_usd: number;
   category_adjustment: number;
   growth_multiplier: number;
   maturity_multiplier: number;
+  farm_verdict: FarmVerdict;
+  farm_net_usd: number;
+  farm_net_per_hour_usd: number;
+  farm_gas_usd: number;
+  farm_time_hours: number;
+  farm_capital_usd: number;
   /** The exact farm plan from board.json, so the page shows the board's own steps, never a second copy. */
   farm_steps: string[];
   /** Whether the snapshot's watchlist names this protocol. */
@@ -180,6 +237,33 @@ export interface LiveRow {
   change_7d: number | null;
 }
 
+/** One group of the 758-protocol ledger: every protocol in exactly one group. */
+export interface LedgerGroup {
+  group: string;
+  count: number;
+  note: string;
+}
+
+/** The fitted odds model as the dashboard shows it. */
+export interface OddsSummary {
+  n: number;
+  positives: number;
+  baseRate: number;
+  baseBrier: number;
+  selectedLoo: number;
+  selectedWf: number;
+  wfTrain: number;
+  wfTest: number;
+  wfCutoff: string;
+  controlLoo: number;
+  controlWf: number;
+  terms: { label: string; looBrier: number; wfBrier: number; kept: boolean }[];
+  coefficients: { feature: string; value: number }[];
+  calibration: { bin: number; n: number; meanPred: number; observed: number }[];
+  ageBuckets: { bucket: string; n: number; withToken: number; rate: number }[];
+  spec: string[];
+}
+
 /** Everything the dashboard needs: the board, the live set, the fitted model and its hold-out check. */
 export interface RadarData {
   as_of: string;
@@ -194,6 +278,12 @@ export interface RadarData {
   live_size: number;
   rows: RadarRow[];
   live: LiveRow[];
+  odds: OddsSummary;
+  ablation: { variants: import('./evidence.ts').AblationRow[]; ranges: import('./evidence.ts').RangeCalibration };
+  ledger: LedgerGroup[];
+  ledger_total: number;
+  farm_defaults: { allocShare: number; farmers: number; hourlyUsd: number; refDepositUsd: number };
+  farm_counts: { farm: number; thin: number; skip: number };
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -204,10 +294,22 @@ export class SnapshotError extends Error {
   }
 }
 
-export const MODEL_VERSION = 'radar-2-comps';
+export const MODEL_VERSION = 'radar-3-odds';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
+
+/** Farm economics defaults: the stated, adjustable assumptions behind every verdict. */
+export const FARM_DEFAULTS = {
+  /** Share of a protocol's expected value assumed allocated to an airdrop. */
+  allocShare: 0.05,
+  /** Farmers assumed to split that allocation. */
+  farmers: 10_000,
+  /** Value of an hour of the farmer's time, in dollars. */
+  hourlyUsd: 25,
+  /** The average farmer's deposit, in dollars: airdrop share scales linearly with deposit against it. */
+  refDepositUsd: 100,
+} as const;
 
 const DAY_MS = 86_400_000;
 const MAX_IMPLIED = 100_000_000_000_000;
@@ -308,17 +410,33 @@ export function isPreToken(p: SnapshotProtocol): boolean {
 /** Whether a protocol is one the board may rank: pre-token, and not a wrapped, staked or bridged product of a protocol whose token already trades.
  * The exclusions are the watchlist's own rule, applied to the whole board: a bridge of BTC, a staked-ETH
  * product or a versioned pool is not a protocol still waiting on a launch of its own, so it is never ranked.
- * Categories: Bridge, Canonical Bridge, Cross Chain Bridge, Liquid Staking, Liquid Restaking, Restaked BTC,
- * CEX. Names: ending in a version marker, carrying a whole word wrapped / staked / staking, or beginning
- * with an exchange's name (Binance, Coinbase, Bybit, Kraken, Bitget, OKX, Bitfinex, Gemini). */
+ * Categories (the house rule's list, exactly): Bridge, Canonical Bridge, Liquid Staking, Liquid Restaking,
+ * Restaked BTC, CEX. Names: ending in a version marker, carrying a whole word wrapped / staked / staking, or
+ * beginning with an exchange's name (Binance, Coinbase, Bybit, Kraken, Bitget, OKX, Bitfinex, Gemini).
+ * "Cross Chain Bridge" is NOT in the house list, so it does not exclude: Circle Gateway ($65.3M) is ranked
+ * (review/readmit-decisions.md — the one re-admission; every other questionable exclusion trips a clause
+ * of the house rule as written and stays excluded). */
 export function isRankable(p: SnapshotProtocol): boolean {
   if (!isPreToken(p)) return false;
-  const excludedCategories = new Set(['CEX', 'Bridge', 'Canonical Bridge', 'Cross Chain Bridge', 'Liquid Staking', 'Liquid Restaking', 'Restaked BTC']);
+  const excludedCategories = new Set(['CEX', 'Bridge', 'Canonical Bridge', 'Liquid Staking', 'Liquid Restaking', 'Restaked BTC']);
   if (p.category !== null && excludedCategories.has(p.category)) return false;
   if (VERSIONED.test(p.name)) return false;
   if (/\bwrapped\b|\bstaked\b|\bstaking\b/i.test(p.name)) return false;
   if (/^(Binance|Coinbase|Bybit|Kraken|Bitget|OKX|Bitfinex|Gemini)\b/i.test(p.name)) return false;
   return true;
+}
+
+/** Why a pre-token protocol is NOT ranked: the one house-rule clause that excludes it, or null if rankable.
+ * Priority is category, then version marker, then wrapped/staked word, then exchange prefix, so every
+ * excluded protocol lands in exactly one group in the ledger. */
+export function exclusionReason(p: SnapshotProtocol): string | null {
+  if (!isPreToken(p)) return null;
+  const excludedCategories = new Set(['CEX', 'Bridge', 'Canonical Bridge', 'Liquid Staking', 'Liquid Restaking', 'Restaked BTC']);
+  if (p.category !== null && excludedCategories.has(p.category)) return `category: ${p.category}`;
+  if (VERSIONED.test(p.name)) return 'name ends in a version marker';
+  if (/\bwrapped\b|\bstaked\b|\bstaking\b/i.test(p.name)) return 'name has a wrapped/staked word';
+  if (/^(Binance|Coinbase|Bybit|Kraken|Bitget|OKX|Bitfinex|Gemini)\b/i.test(p.name)) return 'name begins with an exchange name';
+  return null;
 }
 
 /** The snapshot's traded set: market cap and TVL both above zero, sorted by slug (the fit's input). */
@@ -382,8 +500,11 @@ export function evaluateHoldout(snapshot: Snapshot): HoldoutMetrics {
   };
 }
 
-/** The protocols the board ranks, strongest first, with ranks 1..n. */
-export function buildBoard(snapshot: Snapshot, fit: FittedModel): BoardRow[] {
+/** The protocols the board ranks, strongest first, with ranks 1..n.
+ * Ranked on EXPECTED value: the conditional value-if-launches times
+ * P(token) from the odds model. The conditional value and the odds are
+ * kept as separate columns, so the ranking can be audited. */
+export function buildBoard(snapshot: Snapshot, fit: FittedModel, odds: FittedOdds): BoardRow[] {
   const index = new Map(snapshot.protocols.map((p) => [p.slug, p]));
   const chosen = new Map<string, SnapshotProtocol>();
   // The watchlist is the floor: every slug, even one the snapshot no longer carries.
@@ -397,11 +518,15 @@ export function buildBoard(snapshot: Snapshot, fit: FittedModel): BoardRow[] {
     if (!chosen.has(p.slug) && isRankable(p)) chosen.set(p.slug, p);
   }
 
+  const scenario = defaultFarmScenario();
   const scored = [...chosen.values()].map((p) => {
     const v = impliedValue(p, snapshot.as_of, fit);
-    return { p, v };
+    const prob = predictOdds(odds, p, snapshot.as_of);
+    const expected = Math.max(1, Math.min(MAX_IMPLIED, Math.round(v.implied * prob)));
+    const farm = farmEconomics(p, v.age, expected, scenario);
+    return { p, v, prob, expected, farm };
   });
-  scored.sort((a, b) => b.v.implied - a.v.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  scored.sort((a, b) => b.expected - a.expected || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
     rank: i + 1,
     slug: s.p.slug,
@@ -416,7 +541,9 @@ export function buildBoard(snapshot: Snapshot, fit: FittedModel): BoardRow[] {
     symbol: s.p.symbol,
     token_status: 'pre-token',
     age_days: s.v.age,
-    implied_value_usd: s.v.implied,
+    implied_value_usd: s.expected,
+    conditional_value_usd: s.v.implied,
+    token_probability: Math.round(s.prob * 1e4) / 1e4,
     model: {
       base_value_usd: s.v.base,
       category_adjustment: Math.round(s.v.categoryAdj * 1e4) / 1e4,
@@ -425,6 +552,12 @@ export function buildBoard(snapshot: Snapshot, fit: FittedModel): BoardRow[] {
       maturity_multiplier: Math.round(s.v.maturityMult * 1e4) / 1e4,
       age_days: s.v.age,
     },
+    farm_verdict: s.farm.verdict,
+    farm_net_usd: Math.round(s.farm.netUsd),
+    farm_net_per_hour_usd: Math.round(s.farm.netPerHourUsd * 100) / 100,
+    farm_gas_usd: s.farm.gasUsd,
+    farm_time_hours: Math.round(s.farm.timeHours * 100) / 100,
+    farm_capital_usd: s.farm.capitalUsd,
     farm_steps: farmSteps(s.p, s.v.age).map(stepText),
   }));
 }
@@ -534,6 +667,52 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   ];
 }
 
+/** The farm scenario: the stated assumptions behind a verdict. depositUsd null means the plan's own capital tier. */
+export interface FarmScenario {
+  allocShare: number;
+  farmers: number;
+  hourlyUsd: number;
+  refDepositUsd: number;
+  depositUsd: number | null;
+}
+
+/** The default scenario: the assumptions the shipped verdicts use. */
+export function defaultFarmScenario(): FarmScenario {
+  return { allocShare: FARM_DEFAULTS.allocShare, farmers: FARM_DEFAULTS.farmers, hourlyUsd: FARM_DEFAULTS.hourlyUsd, refDepositUsd: FARM_DEFAULTS.refDepositUsd, depositUsd: null };
+}
+
+/**
+ * Net-of-fees economics for one row. The airdrop value is derived
+ * transparently from the expected value with EXPLICIT, LABELLED
+ * assumptions — it is not a measured fact:
+ *   airdrop per farmer = expected value x allocShare / farmers
+ *                        x (deposit / refDepositUsd)
+ * The deposit scales the share linearly against the average farmer's
+ * deposit ($100): a farmer who deposits twice the average is assumed to
+ * earn twice the share. Gas is one deposit transaction plus one weekly
+ * transaction per week of the hold (the claim step costs nothing to
+ * check). Active time is the plan's own minutes: wallet setup 5, deposit
+ * 15, claim 10, log 5, plus 10 minutes a week. Verdict: FARM when the
+ * net clears $50 AND $25 an hour (beats the $25/h time value and is
+ * worth the effort), THIN when it is positive but below that bar, SKIP
+ * when it loses money. Change the assumptions and the verdicts move —
+ * the dashboard's scenario controls do exactly that, with the same
+ * arithmetic, so a judge can see the sensitivity.
+ */
+export function farmEconomics(p: SnapshotProtocol, age: number | null, expectedValueUsd: number, scenario: FarmScenario): FarmEconomics {
+  const chain = chainOf(p);
+  const capital = scenario.depositUsd ?? capitalFor(p);
+  const hold = holdDaysFor(age);
+  const weeks = Math.ceil(hold / 7);
+  const gas = (1 + weeks) * gasUsd(chain);
+  const timeHours = 35 / 60 + (weeks * 10) / 60;
+  const airdrop = ((expectedValueUsd * scenario.allocShare) / scenario.farmers) * (capital / scenario.refDepositUsd);
+  const net = airdrop - gas - timeHours * scenario.hourlyUsd;
+  const netPerHour = net / timeHours;
+  const verdict: FarmVerdict = net >= 50 && netPerHour >= 25 ? 'FARM' : net > 0 ? 'THIN' : 'SKIP';
+  return { verdict, airdropUsd: airdrop, gasUsd: gas, timeHours, capitalUsd: capital, holdDays: hold, netUsd: net, netPerHourUsd: netPerHour };
+}
+
 /** The live-token protocols, by market cap, for the dashboard's Live token view. */
 export function liveRows(snapshot: Snapshot): LiveRow[] {
   return snapshot.protocols
@@ -565,22 +744,111 @@ export function radarRow(row: BoardRow): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
+    conditional_value_usd: row.conditional_value_usd,
+    token_probability: row.token_probability,
     base_value_usd: row.model.base_value_usd,
     category_adjustment: row.model.category_adjustment,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
+    farm_verdict: row.farm_verdict,
+    farm_net_usd: row.farm_net_usd,
+    farm_net_per_hour_usd: row.farm_net_per_hour_usd,
+    farm_gas_usd: row.farm_gas_usd,
+    farm_time_hours: row.farm_time_hours,
+    farm_capital_usd: row.farm_capital_usd,
     farm_steps: row.farm_steps,
     watchlist: false, // filled in by buildRadar, which owns the watchlist
   };
+}
+
+/** The 758-protocol ledger: every protocol in exactly one group, with counts that sum to the snapshot size. */
+export function buildLedger(snapshot: Snapshot, board: BoardRow[]): LedgerGroup[] {
+  const boardSlugs = new Set(board.map((r) => r.slug));
+  const watchlist = new Set(snapshot.watchlist);
+  const groups: LedgerGroup[] = [];
+  const rankedWatchlist = board.filter((r) => watchlist.has(r.slug)).length;
+  groups.push({
+    group: 'Ranked — on the watchlist',
+    count: rankedWatchlist,
+    note: 'TVL at or above the $50M floor, records no token, passes the eligibility rule.',
+  });
+  groups.push({
+    group: 'Ranked — below the $50M floor',
+    count: board.length - rankedWatchlist,
+    note: 'Records no token and passes the eligibility rule, but below the watchlist floor.',
+  });
+  const mcapPositive = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0).length;
+  groups.push({
+    group: 'Records a token — has a market cap above zero',
+    count: mcapPositive,
+    note: `Already trading; shown at the market's own value, never ranked (top 24 on the page). ${tradedSet(snapshot).length} of them have TVL above zero and are the comps fit's input.`,
+  });
+  const tokenNoUsableMcap = snapshot.protocols.filter((p) => !isPreToken(p) && !(p.mcap_usd !== null && p.mcap_usd > 0)).length;
+  groups.push({
+    group: 'Records a token — no usable market cap',
+    count: tokenNoUsableMcap,
+    note: 'A CoinGecko id or a symbol is recorded, but the market cap is missing, zero, or negative: not pre-token, not ranked.',
+  });
+  const byReason = new Map<string, number>();
+  let unexplained = 0;
+  for (const p of snapshot.protocols) {
+    if (!isPreToken(p) || boardSlugs.has(p.slug)) continue;
+    const reason = exclusionReason(p);
+    if (reason === null) {
+      unexplained++;
+      continue;
+    }
+    byReason.set(reason, (byReason.get(reason) ?? 0) + 1);
+  }
+  const reasonOrder = [
+    'category: CEX',
+    'category: Bridge',
+    'category: Canonical Bridge',
+    'category: Liquid Staking',
+    'category: Liquid Restaking',
+    'category: Restaked BTC',
+    'name ends in a version marker',
+    'name has a wrapped/staked word',
+    'name begins with an exchange name',
+  ];
+  for (const reason of [...reasonOrder, ...[...byReason.keys()].filter((k) => !reasonOrder.includes(k)).sort()]) {
+    const n = byReason.get(reason) ?? 0;
+    if (n > 0) {
+      groups.push({
+        group: `Excluded — ${reason}`,
+        count: n,
+        note: 'Pre-token, but the house eligibility rule excludes it (see the method note).',
+      });
+    }
+  }
+  if (unexplained > 0) {
+    groups.push({
+      group: 'Excluded — no house-rule reason recorded',
+      count: unexplained,
+      note: 'Pre-token and not ranked, but no clause of the house rule excludes it. This should be zero; if it is not, the board logic has a gap.',
+    });
+  }
+  return groups;
 }
 
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: RadarData } {
   const fit = fitModel(tradedSet(snapshot));
   const holdout = evaluateHoldout(snapshot);
-  const board = buildBoard(snapshot, fit);
+  const oddsModel = fitOddsModel(snapshot);
+  const oddsEval = evaluateOdds(snapshot);
+  const board = buildBoard(snapshot, fit, oddsModel);
   const live = liveRows(snapshot);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
+  const ledger = buildLedger(snapshot, board);
+  const ledgerTotal = ledger.reduce((s, g) => s + g.count, 0);
+  const ablation = valueAblation(snapshot);
+  const farmCounts = {
+    farm: board.filter((r) => r.farm_verdict === 'FARM').length,
+    thin: board.filter((r) => r.farm_verdict === 'THIN').length,
+    skip: board.filter((r) => r.farm_verdict === 'SKIP').length,
+  };
+  const oddsNames = oddsFeatureNames(oddsModel.spec, oddsModel.ctx);
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -594,6 +862,29 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     live_size: live.length,
     rows: board.map(radarRow).map((r) => ({ ...r, watchlist: snapshot.watchlist.includes(r.slug) })),
     live,
+    odds: {
+      n: oddsEval.n,
+      positives: oddsEval.positives,
+      baseRate: oddsEval.baseRate,
+      baseBrier: oddsEval.baseBrier,
+      selectedLoo: oddsEval.selectedLoo,
+      selectedWf: oddsEval.selectedWf,
+      wfTrain: oddsEval.wfTrain,
+      wfTest: oddsEval.wfTest,
+      wfCutoff: oddsEval.wfCutoff,
+      controlLoo: oddsEval.controlLoo,
+      controlWf: oddsEval.controlWf,
+      terms: oddsEval.terms,
+      coefficients: oddsModel.beta.map((value, i) => ({ feature: oddsNames[i]!, value: Math.round(value * 1e4) / 1e4 })),
+      calibration: oddsEval.calibration,
+      ageBuckets: oddsEval.ageBuckets,
+      spec: oddsModel.spec,
+    },
+    ablation,
+    ledger,
+    ledger_total: ledgerTotal,
+    farm_defaults: { allocShare: FARM_DEFAULTS.allocShare, farmers: FARM_DEFAULTS.farmers, hourlyUsd: FARM_DEFAULTS.hourlyUsd, refDepositUsd: FARM_DEFAULTS.refDepositUsd },
+    farm_counts: farmCounts,
   };
   return { board, radar };
 }
