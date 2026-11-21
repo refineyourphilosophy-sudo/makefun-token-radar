@@ -71,6 +71,9 @@ function copyFiles(from: string, to: string): string[] {
 }
 
 const dashboardFiles = copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
+if (!dashboardFiles.includes('index.html') || !dashboardFiles.some((f) => f.endsWith('.css')) || !dashboardFiles.some((f) => f.endsWith('.js'))) {
+  fail('dashboard/ must hold index.html and at least one .css and one .js file: the gate refuses a page without them');
+}
 const shots = copyFiles(join(here, 'screenshots'), join(out, 'screenshots'));
 if (shots.length < 3) {
   fail(`screenshots/ holds ${shots.length} image${shots.length === 1 ? '' : 's'}: hand in 3, the board, a detail view and a filtered view`);
