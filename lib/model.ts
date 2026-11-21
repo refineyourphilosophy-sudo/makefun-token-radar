@@ -1,4 +1,4 @@
-import { evaluateOdds, fitOddsModel, oddsFeatureNames, predictOdds, type FittedOdds } from './odds.ts';
+import { evaluateOdds, fitOddsModel, oddsFeatureNames, oddsFeatures, predictOdds, type FittedOdds } from './odds.ts';
 import { valueAblation } from './evidence.ts';
 
 // Token Radar — valuation model, fitted at runtime from the sealed snapshot.
@@ -161,6 +161,10 @@ export interface BoardRow {
   conditional_value_usd: number;
   /** P(token) from the odds model: the peers' record, not a forecast. */
   token_probability: number;
+  /** The logit contributions behind P(token), aligned with the odds
+   * coefficients in the dashboard data (beta x feature value each, so
+   * they sum to the log-odds). Lets a judge audit any row's odds. */
+  odds_contrib: number[];
   model: {
     base_value_usd: number;
     category_adjustment: number;
@@ -175,6 +179,7 @@ export interface BoardRow {
   farm_gas_usd: number;
   farm_time_hours: number;
   farm_capital_usd: number;
+  farm_hold_days: number;
   farm_steps: string[];
 }
 
@@ -210,6 +215,7 @@ export interface RadarRow {
   implied_value_usd: number;
   conditional_value_usd: number;
   token_probability: number;
+  odds_contrib: number[];
   base_value_usd: number;
   category_adjustment: number;
   growth_multiplier: number;
@@ -220,6 +226,7 @@ export interface RadarRow {
   farm_gas_usd: number;
   farm_time_hours: number;
   farm_capital_usd: number;
+  farm_hold_days: number;
   /** The exact farm plan from board.json, so the page shows the board's own steps, never a second copy. */
   farm_steps: string[];
   /** Whether the snapshot's watchlist names this protocol. */
@@ -262,6 +269,8 @@ export interface OddsSummary {
   calibration: { bin: number; n: number; meanPred: number; observed: number }[];
   ageBuckets: { bucket: string; n: number; withToken: number; rate: number }[];
   spec: string[];
+  /** Median age in years over the odds training rows with a known listing date (the age imputed when it is unknown). */
+  median_age_years: number;
 }
 
 /** Everything the dashboard needs: the board, the live set, the fitted model and its hold-out check. */
@@ -524,7 +533,9 @@ export function buildBoard(snapshot: Snapshot, fit: FittedModel, odds: FittedOdd
     const prob = predictOdds(odds, p, snapshot.as_of);
     const expected = Math.max(1, Math.min(MAX_IMPLIED, Math.round(v.implied * prob)));
     const farm = farmEconomics(p, v.age, expected, scenario);
-    return { p, v, prob, expected, farm };
+    const x = oddsFeatures(p, odds.spec, odds.ctx, snapshot.as_of);
+    const contrib = x.map((value, j) => Math.round(value * odds.beta[j]! * 1000) / 1000);
+    return { p, v, prob, expected, farm, contrib };
   });
   scored.sort((a, b) => b.expected - a.expected || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -544,6 +555,7 @@ export function buildBoard(snapshot: Snapshot, fit: FittedModel, odds: FittedOdd
     implied_value_usd: s.expected,
     conditional_value_usd: s.v.implied,
     token_probability: Math.round(s.prob * 1e4) / 1e4,
+    odds_contrib: s.contrib,
     model: {
       base_value_usd: s.v.base,
       category_adjustment: Math.round(s.v.categoryAdj * 1e4) / 1e4,
@@ -556,8 +568,9 @@ export function buildBoard(snapshot: Snapshot, fit: FittedModel, odds: FittedOdd
     farm_net_usd: Math.round(s.farm.netUsd),
     farm_net_per_hour_usd: Math.round(s.farm.netPerHourUsd * 100) / 100,
     farm_gas_usd: s.farm.gasUsd,
-    farm_time_hours: Math.round(s.farm.timeHours * 100) / 100,
+    farm_time_hours: Math.round(s.farm.timeHours * 1e4) / 1e4,
     farm_capital_usd: s.farm.capitalUsd,
+    farm_hold_days: s.farm.holdDays,
     farm_steps: farmSteps(s.p, s.v.age).map(stepText),
   }));
 }
@@ -746,6 +759,7 @@ export function radarRow(row: BoardRow): RadarRow {
     implied_value_usd: row.implied_value_usd,
     conditional_value_usd: row.conditional_value_usd,
     token_probability: row.token_probability,
+    odds_contrib: row.odds_contrib,
     base_value_usd: row.model.base_value_usd,
     category_adjustment: row.model.category_adjustment,
     growth_multiplier: row.model.growth_multiplier,
@@ -756,6 +770,7 @@ export function radarRow(row: BoardRow): RadarRow {
     farm_gas_usd: row.farm_gas_usd,
     farm_time_hours: row.farm_time_hours,
     farm_capital_usd: row.farm_capital_usd,
+    farm_hold_days: row.farm_hold_days,
     farm_steps: row.farm_steps,
     watchlist: false, // filled in by buildRadar, which owns the watchlist
   };
@@ -879,6 +894,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
       calibration: oddsEval.calibration,
       ageBuckets: oddsEval.ageBuckets,
       spec: oddsModel.spec,
+      median_age_years: Math.round(oddsModel.ctx.medianAgeYears * 100) / 100,
     },
     ablation,
     ledger,

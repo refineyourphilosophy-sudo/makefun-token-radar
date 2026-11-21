@@ -17,18 +17,25 @@ const outDir = at >= 0 && at + 1 < process.argv.length ? process.argv[at + 1] : 
 const executablePath = join(homedir(), '.cache/ms-playwright/chromium-1255/chrome-linux64/chrome');
 
 const views = [
-  ['index.html', '1-board.png'],
-  ['index.html#/p/steakhouse-financial', '2-detail.png'],
-  ['index.html#/f/Lending', '3-filtered.png'],
+  ['index.html', '1-board.png', null],
+  ['index.html#/p/steakhouse-financial', '2-detail.png', null],
+  ['index.html', '3-filtered.png', '#evidence'],
 ];
 
 const browser = await chromium.launch({ executablePath });
-for (const [page, shot] of views) {
+for (const [page, shot, scrollTo] of views) {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const p = await ctx.newPage();
   await p.goto('file://' + join(outDir, 'dashboard', page));
   await p.waitForSelector('table, .card', { timeout: 15000 });
   await p.waitForTimeout(500);
+  if (scrollTo) {
+    await p.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (el) el.scrollIntoView({ block: 'start' });
+    }, scrollTo);
+    await p.waitForTimeout(300);
+  }
   await p.screenshot({ path: join(root, 'screenshots', shot) });
   await ctx.close();
   console.log('captured', shot);

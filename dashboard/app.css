@@ -43,3 +43,15 @@ ol.farm .cost{color:#7ddba3}
 .back{display:inline-block;margin-bottom:10px}
 .note{color:#9db4d4;font-size:13px;margin:10px 0}
 h2.sec{font-size:18px;margin:22px 0 8px}
+.verdict{display:inline-block;border-radius:10px;padding:1px 8px;font-size:11.5px;font-weight:bold}
+.v-farm{background:#274a35;color:#7ddba3}
+.v-thin{background:#4a3d27;color:#e8b26a}
+.v-skip{background:#2a3a56;color:#9db4d4}
+.scenario{background:#131f33;border:1px solid #2a3a56;border-radius:8px;padding:14px 18px;margin:0 0 12px}
+.scenario h3{margin:0 0 6px;font-size:15px;color:#e8eef7}
+.scenario label{font-size:13px;color:#9db4d4}
+.scenario input[type=number]{width:110px;background:#16233c;color:#e8eef7;border:1px solid #2a3a56;border-radius:6px;padding:8px 10px;font-size:14px}
+.scenario button{background:#16233c;color:#e8eef7;border:1px solid #2a3a56;border-radius:6px;padding:8px 12px;font-size:14px;cursor:pointer}
+.scenario button:hover{border-color:#8fc3ff}
+.sub2{font-size:16px;margin:16px 0 6px}
+td .small{white-space:nowrap}
