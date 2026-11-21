@@ -36,8 +36,22 @@ export function holdoutTestSlugs(snapshot: Snapshot): Set<string> {
 /** One feature's name. 'cats' is the group of category dummies (see oddsContext). */
 export type OddsFeature = 'logtvl' | 'age' | 'age_missing' | 'change' | 'chains' | 'cats';
 
+/**
+ * Age in years imputed for a protocol with no listing date. Unknown-date
+ * protocols record a token at 77.6%, about the rate of the 4+ year bucket
+ * (78.3%) — not the 1–2 year bucket (36.9%) the median-age imputation
+ * put them in. The shipped model imputes 4.0 years and carries NO
+ * 'age_missing' indicator: the indicator's fitted coefficient (+1.26 in
+ * v2) had zero walk-forward validation (walk-forward excludes unknown-date
+ * rows, so it could never see the term), while the 4.0-year imputation
+ * matches the shipped leave-one-out Brier (0.1911 vs 0.1915) with a
+ * transparent encoding. See scripts/eval-odds-v3.mjs. null = v2 behaviour
+ * (median age + indicator) — kept only for the comparison scripts.
+ */
+export const IMPUTED_UNKNOWN_AGE_YEARS: number | null = 4.0;
+
 /** The shipped odds feature set: set by scripts/eval-odds.mjs's term selection. */
-export const SELECTED_ODDS_SPEC: OddsFeature[] = ['logtvl', 'age', 'age_missing', 'change', 'cats'];
+export const SELECTED_ODDS_SPEC: OddsFeature[] = ['logtvl', 'age', 'change', 'cats'];
 
 /** Categories with at least 30 protocols in the odds training set get a dummy each. */
 export const CATEGORY_DUMMY_MIN = 30;
@@ -46,10 +60,19 @@ export const CATEGORY_DUMMY_MIN = 30;
 export interface OddsContext {
   /** Median age in years over the training protocols with a known listing date. */
   medianAgeYears: number;
+  /** Age in years used when a listing date is unknown (the imputed value, or the median when no imputation is set). */
+  unknownAgeYears: number;
+  /** Whether the 'age_missing' indicator feature is active (false when an imputed age is set). */
+  useAgeMissing: boolean;
   /** Category dummies, in a fixed order. */
   catDummies: string[];
   /** Overall token rate in the training set (the base-rate reference). */
   baseRate: number;
+}
+
+/** Options for building the feature context. `unknownAgeYears` null = v2 behaviour (median age + indicator). */
+export interface OddsContextOptions {
+  unknownAgeYears?: number | null;
 }
 
 /** The odds training rows: every protocol except the 25 hold-out test slugs. */
@@ -59,7 +82,7 @@ export function oddsRows(snapshot: Snapshot): SnapshotProtocol[] {
 }
 
 /** Build the feature context from the odds training rows. */
-export function oddsContext(rows: SnapshotProtocol[], asOf: string): OddsContext {
+export function oddsContext(rows: SnapshotProtocol[], asOf: string, opts: OddsContextOptions = {}): OddsContext {
   const ages = rows
     .map((p) => ageDays(asOf, p.listed_at))
     .filter((a): a is number => a !== null)
@@ -75,7 +98,14 @@ export function oddsContext(rows: SnapshotProtocol[], asOf: string): OddsContext
     .sort((a, b) => (a[0] < b[0] ? -1 : 1))
     .map(([k]) => k);
   const positives = rows.filter(hasToken).length;
-  return { medianAgeYears, catDummies, baseRate: rows.length === 0 ? 0 : positives / rows.length };
+  const imputed = opts.unknownAgeYears ?? null;
+  return {
+    medianAgeYears,
+    unknownAgeYears: imputed ?? medianAgeYears,
+    useAgeMissing: imputed === null,
+    catDummies,
+    baseRate: rows.length === 0 ? 0 : positives / rows.length,
+  };
 }
 
 const clampChange = (c: number | null): number => Math.min(120, Math.max(-60, typeof c === 'number' && Number.isFinite(c) ? c : 0));
@@ -87,7 +117,7 @@ export function oddsFeatures(p: SnapshotProtocol, spec: OddsFeature[], ctx: Odds
     if (f === 'logtvl') x.push(Math.log10(p.tvl_usd) - 7.5);
     else if (f === 'age') {
       const age = ageDays(asOf, p.listed_at);
-      x.push(age === null ? ctx.medianAgeYears : age / 365);
+      x.push(age === null ? ctx.unknownAgeYears : age / 365);
     } else if (f === 'age_missing') x.push(p.listed_at === null ? 1 : 0);
     else if (f === 'change') x.push(clampChange(p.change_7d) / 100);
     else if (f === 'chains') x.push(Math.log(p.chains.length + 1));
@@ -199,7 +229,7 @@ export interface FittedOdds {
 /** Fit the shipped odds model on the odds training rows. */
 export function fitOddsModel(snapshot: Snapshot): FittedOdds {
   const rows = oddsRows(snapshot);
-  const ctx = oddsContext(rows, snapshot.as_of);
+  const ctx = oddsContext(rows, snapshot.as_of, { unknownAgeYears: IMPUTED_UNKNOWN_AGE_YEARS });
   const X = rows.map((p) => oddsFeatures(p, SELECTED_ODDS_SPEC, ctx, snapshot.as_of));
   const y = rows.map((p) => (hasToken(p) ? 1 : 0));
   const fit = fitLogistic(X, y);
@@ -379,12 +409,19 @@ export interface OddsEvaluation {
  */
 export function evaluateOdds(snapshot: Snapshot): OddsEvaluation {
   const rows = oddsRows(snapshot);
-  const ctx = oddsContext(rows, snapshot.as_of);
+  const ctx = oddsContext(rows, snapshot.as_of, { unknownAgeYears: IMPUTED_UNKNOWN_AGE_YEARS });
   const ys = rows.map((p) => (hasToken(p) ? 1 : 0));
   const baseBrier = baseRateBrier(ctx.baseRate);
   const base: OddsFeature[] = ['logtvl'];
+  // The age candidate follows the shipped encoding: with an imputed age it
+  // is just ['age'] (no indicator exists to add); without one it is the
+  // v2 bundle ['age', 'age_missing'].
+  const ageCandidate: { label: string; add: OddsFeature[] } =
+    IMPUTED_UNKNOWN_AGE_YEARS === null
+      ? { label: '+ age (years + listing-date-unknown)', add: ['age', 'age_missing'] }
+      : { label: `+ age (years; unknown imputed at ${IMPUTED_UNKNOWN_AGE_YEARS.toFixed(1)}y)`, add: ['age'] };
   const candidates: { label: string; add: OddsFeature[] }[] = [
-    { label: '+ age (years + listing-date-unknown)', add: ['age', 'age_missing'] },
+    ageCandidate,
     { label: '+ 7d TVL change', add: ['change'] },
     { label: '+ chain count', add: ['chains'] },
     { label: '+ category dummies', add: ['cats'] },
